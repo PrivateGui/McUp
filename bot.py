@@ -8,7 +8,7 @@ from pymongo import MongoClient
 API_TOKEN = '1160037511:LpWEJYm4o6Jw33kEFiYXahNwdWPoHASdsIgRLVeB'
 
 # MongoDB Connection (Update with your MongoDB URI)
-mongo_client = MongoClient('YOUR_MONGODB_CONNECTION_STRING')
+mongo_client = MongoClient('mongodb://mongo:teQHtQRjhxCWxcezNkfuoelsdetxOxdq@mainline.proxy.rlwy.net:13140')
 db = mongo_client['persian_uploader_bot']
 users_collection = db['users']
 files_collection = db['files']
