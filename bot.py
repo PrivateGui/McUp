@@ -6,13 +6,8 @@ import random
 import string
 import time
 
-# MongoDB setup with optimized settings
-client = MongoClient(
-    'mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347',
-    connectTimeoutMS=2000,
-    socketTimeoutMS=2000,
-    serverSelectionTimeoutMS=2000
-)
+# MongoDB setup
+client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347', connectTimeoutMS=2000, serverSelectionTimeoutMS=2000)
 db = client['telegram_bot_db']
 files_col = db['files']
 texts_col = db['texts']
@@ -26,7 +21,7 @@ WHITELIST = ['zonercm', 'id_hormoz']
 BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
 LAST_UPDATE_ID = 0
 
-# Persian numerals mapping
+# Persian numbers
 PERSIAN_NUMS = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
 
 def to_persian(text):
@@ -46,20 +41,25 @@ def send_message(chat_id, text, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=2
+            timeout=3
         )
     except Exception as e:
-        print(f"Failed to send message: {e}")
+        print(f"Message send failed: {e}")
 
-def delete_message(chat_id, message_id):
+def send_photo(chat_id, photo_id, caption=None):
     try:
         requests.post(
-            f"{BASE_URL}/deleteMessage",
-            json={'chat_id': chat_id, 'message_id': message_id},
-            timeout=1
+            f"{BASE_URL}/sendPhoto",
+            json={
+                'chat_id': chat_id,
+                'photo': photo_id,
+                'caption': caption,
+                'parse_mode': 'MarkdownV2'
+            },
+            timeout=4
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"Photo send failed: {e}")
 
 def send_document(chat_id, file_id, caption=None, reply_markup=None):
     try:
@@ -72,24 +72,10 @@ def send_document(chat_id, file_id, caption=None, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=3
+            timeout=4
         )
     except Exception as e:
-        print(f"Failed to send document: {e}")
-
-def edit_message_reply_markup(chat_id, message_id, reply_markup):
-    try:
-        requests.post(
-            f"{BASE_URL}/editMessageReplyMarkup",
-            json={
-                'chat_id': chat_id,
-                'message_id': message_id,
-                'reply_markup': reply_markup
-            },
-            timeout=1
-        )
-    except:
-        pass
+        print(f"Document send failed: {e}")
 
 def check_member(user_id):
     try:
@@ -98,10 +84,8 @@ def check_member(user_id):
             json={'chat_id': CHANNEL_ID, 'user_id': user_id},
             timeout=2
         ).json()
-        status = response.get('result', {}).get('status')
-        return status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        print(f"Channel check error: {e}")
+        return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
+    except:
         return True  # Fail-safe
 
 def generate_code():
@@ -210,99 +194,53 @@ def handle_panel(update):
     
     send_message(chat_id, "🔧 *پنل مدیریت*", keyboard)
 
-def handle_callback(update):
-    cb = update['callback_query']
-    data = cb['data']
-    msg = cb['message']
-    user = cb['from']
-    chat_id = msg['chat']['id']
-    msg_id = msg['message_id']
-    
-    if data == 'check_channel':
-        if check_member(user['id']):
-            delete_message(chat_id, msg_id)
-            send_message(chat_id, "✅ عضویت تایید شد!")
-        else:
-            send_message(chat_id, "❌ هنوز عضو نشده‌اید!")
-    elif data.startswith('like_'):
-        code = data.split('_')[1]
-        new_likes = update_likes(code, user['id'])
-        stats, liked = get_stats(code, user['id'])
-        keyboard = create_keyboard(code, new_likes, stats['downloads'], liked)
-        edit_message_reply_markup(chat_id, msg_id, keyboard)
-    elif data in ['upload_file', 'upload_text', 'broadcast_msg', 'broadcast_photo']:
-        users_col.update_one(
-            {'user_id': user['id']},
-            {'$set': {'action': data}},
-            upsert=True
-        )
-        send_message(chat_id, {
-            'upload_file': "📁 فایل خود را ارسال کنید",
-            'upload_text': "📝 متن خود را ارسال کنید",
-            'broadcast_msg': "📢 پیام همگانی را وارد کنید",
-            'broadcast_photo': "🖼️ عکس همگانی را ارسال کنید"
-        }[data])
-
-def handle_admin_action(update):
-    msg = update['message']
-    user = msg['from']
-    chat_id = msg['chat']['id']
-    
-    user_data = users_col.find_one({'user_id': user['id']}) or {}
-    action = user_data.get('action')
-    
-    if not action:
-        return
-    
-    if action == 'upload_file' and 'document' in msg:
-        code = generate_code()
-        files_col.insert_one({
-            'file_id': msg['document']['file_id'],
-            'caption': msg.get('caption'),
-            'code': code,
-            'time': datetime.now()
-        })
-        send_message(chat_id, f"✅ فایل آپلود شد!\n\n```\n/start {code}\n```")
-        users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
-    
-    elif action == 'upload_text' and 'text' in msg:
-        code = generate_code()
-        texts_col.insert_one({
-            'text': msg['text'],
-            'code': code,
-            'time': datetime.now()
-        })
-        send_message(chat_id, f"✅ متن آپلود شد!\n\n```\n/start {code}\n```")
-        users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
-    
-    elif action == 'broadcast_msg' and 'text' in msg:
-        users = list(users_col.find({}))
-        for u in users:
-            try:
-                send_message(u['chat_id'], msg['text'])
-            except:
-                continue
-        send_message(chat_id, f"📢 ارسال به {to_persian(len(users))} کاربر")
-        users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
-    
-    elif action == 'broadcast_photo' and 'photo' in msg:
-        users = list(users_col.find({}))
-        photo_id = msg['photo'][-1]['file_id']
-        caption = msg.get('caption', '')
-        for u in users:
-            try:
-                send_document(u['chat_id'], photo_id, caption)
-            except:
-                continue
-        send_message(chat_id, f"🖼️ ارسال به {to_persian(len(users))} کاربر")
-        users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
+def handle_broadcast_photo(chat_id, photo_id, caption):
+    users = list(users_col.find({}))
+    success = 0
+    for u in users:
+        try:
+            send_photo(u['chat_id'], photo_id, caption)
+            success += 1
+        except Exception as e:
+            print(f"Failed to send to {u['user_id']}: {e}")
+    return success
 
 def process_update(update):
     global LAST_UPDATE_ID
     LAST_UPDATE_ID = update['update_id']
     
     if 'callback_query' in update:
-        handle_callback(update)
+        cb = update['callback_query']
+        data = cb['data']
+        msg = cb['message']
+        user = cb['from']
+        chat_id = msg['chat']['id']
+        msg_id = msg['message_id']
+        
+        if data == 'check_channel':
+            if check_member(user['id']):
+                delete_message(chat_id, msg_id)
+                send_message(chat_id, "✅ عضویت تایید شد!")
+            else:
+                send_message(chat_id, "❌ هنوز عضو نشده‌اید!")
+        elif data.startswith('like_'):
+            code = data.split('_')[1]
+            new_likes = update_likes(code, user['id'])
+            stats, liked = get_stats(code, user['id'])
+            keyboard = create_keyboard(code, new_likes, stats['downloads'], liked)
+            edit_message_reply_markup(chat_id, msg_id, keyboard)
+        elif data in ['upload_file', 'upload_text', 'broadcast_msg', 'broadcast_photo']:
+            users_col.update_one(
+                {'user_id': user['id']},
+                {'$set': {'action': data}},
+                upsert=True
+            )
+            send_message(chat_id, {
+                'upload_file': "📁 فایل خود را ارسال کنید",
+                'upload_text': "📝 متن خود را ارسال کنید", 
+                'broadcast_msg': "📢 پیام همگانی را وارد کنید",
+                'broadcast_photo': "🖼️ عکس همگانی را ارسال کنید"
+            }[data])
         return
     
     if 'message' not in update or 'from' not in update['message']:
@@ -312,10 +250,54 @@ def process_update(update):
     user = msg['from']
     chat_id = msg['chat']['id']
     
-    # Check admin actions first
-    handle_admin_action(update)
+    # Handle admin actions first
+    user_data = users_col.find_one({'user_id': user['id']}) or {}
+    if 'action' in user_data:
+        action = user_data['action']
+        
+        if action == 'upload_file' and 'document' in msg:
+            code = generate_code()
+            files_col.insert_one({
+                'file_id': msg['document']['file_id'],
+                'caption': msg.get('caption'),
+                'code': code,
+                'time': datetime.now()
+            })
+            send_message(chat_id, f"✅ فایل آپلود شد!\n\n```\n/start {code}\n```")
+            users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
+        
+        elif action == 'upload_text' and 'text' in msg:
+            code = generate_code()
+            texts_col.insert_one({
+                'text': msg['text'],
+                'code': code,
+                'time': datetime.now()
+            })
+            send_message(chat_id, f"✅ متن آپلود شد!\n\n```\n/start {code}\n```")
+            users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
+        
+        elif action == 'broadcast_msg' and 'text' in msg:
+            users = list(users_col.find({}))
+            success = 0
+            for u in users:
+                try:
+                    send_message(u['chat_id'], msg['text'])
+                    success += 1
+                except:
+                    continue
+            send_message(chat_id, f"📢 ارسال به {to_persian(success)} کاربر")
+            users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
+        
+        elif action == 'broadcast_photo' and 'photo' in msg:
+            photo_id = msg['photo'][-1]['file_id']
+            caption = msg.get('caption', '')
+            success = handle_broadcast_photo(chat_id, photo_id, caption)
+            send_message(chat_id, f"🖼️ ارسال به {to_persian(success)} کاربر")
+            users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
+        
+        return
     
-    # Then normal commands
+    # Normal commands
     if 'text' in msg:
         if msg['text'].startswith('/start'):
             handle_start(update)
