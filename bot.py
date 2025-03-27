@@ -29,7 +29,7 @@ def get_iran_time():
 
 # Function to send a message
 def send_message(chat_id, text, reply_markup=None):
-    url = f'https://tapi.bale.ai/bot{API_TOKEN}/sendMessage'
+    url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
     params = {
         'chat_id': chat_id,
         'text': text,
@@ -166,7 +166,27 @@ def send_image_to_all_users(update):
         # Send image logic here
 
 # Main function to process updates
-def process_updates(update):
+def process_updates():
+    url = f'https://api.telegram.org/bot{API_TOKEN}/getUpdates'
+    params = {
+        'offset': -1,  # Start from the last update
+    }
+    last_update_id = None
+
+    while True:
+        response = requests.get(url, params=params)
+        updates = response.json()['result']
+
+        for update in updates:
+            update_id = update['update_id']
+            if last_update_id is None or update_id > last_update_id:
+                process_update(update)
+                last_update_id = update_id
+
+        time.sleep(1)
+
+# Function to process each individual update
+def process_update(update):
     if 'message' in update:
         if 'text' in update['message']:
             text = update['message']['text']
@@ -192,21 +212,5 @@ def process_updates(update):
         elif callback_data == 'send_image':
             send_image_to_all_users(update)
 
-# Start listening for updates
-def main():
-    url = f'https://api.telegram.org/bot{API_TOKEN}/getUpdates'
-    params = {
-        'offset': -1,  # Start from the last update
-    }
-
-    while True:
-        response = requests.get(url, params=params)
-        updates = response.json()['result']
-        
-        for update in updates:
-            process_updates(update)
-
-        time.sleep(1)
-
 if __name__ == "__main__":
-    main()
+    process_updates()
