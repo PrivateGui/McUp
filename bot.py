@@ -6,8 +6,13 @@ import random
 import string
 import time
 
-# MongoDB setup with optimized settings
-client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347', connectTimeoutMS=2000, socketTimeoutMS=2000)
+# MongoDB setup with aggressive timeouts
+client = MongoClient(
+    'mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347',
+    connectTimeoutMS=500,
+    socketTimeoutMS=500,
+    serverSelectionTimeoutMS=500
+)
 db = client['telegram_bot_db']
 files_col = db['files']
 texts_col = db['texts']
@@ -16,8 +21,8 @@ stats_col = db['stats']
 
 # Configuration
 BOT_TOKEN = '1160037511:LpWEJYm4o6Jw33kEFiYXahNwdWPoHASdsIgRLVeB'
-CHANNEL_ID = 5272323810  # Your channel ID
-WHITELIST = ['zonercm', 'id_hormoz']  # Whitelisted usernames
+CHANNEL_ID = 5272323810
+WHITELIST = ['zonercm', 'id_hormoz']
 BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
 LAST_UPDATE_ID = 0
 
@@ -41,7 +46,7 @@ def send_message(chat_id, text, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=3
+            timeout=0.5
         )
     except:
         pass
@@ -55,7 +60,7 @@ def edit_message_reply_markup(chat_id, message_id, reply_markup):
                 'message_id': message_id,
                 'reply_markup': reply_markup
             },
-            timeout=2
+            timeout=0.5
         )
     except:
         pass
@@ -71,7 +76,7 @@ def send_document(chat_id, file_id, caption=None, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=4
+            timeout=1
         )
     except:
         pass
@@ -81,7 +86,7 @@ def check_member(user_id):
         response = requests.post(
             f"{BASE_URL}/getChatMember",
             json={'chat_id': CHANNEL_ID, 'user_id': user_id},
-            timeout=2
+            timeout=0.5
         ).json()
         return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
     except:
@@ -194,7 +199,7 @@ def handle_callback(update):
     
     if data == 'check_channel':
         if check_member(user['id']):
-            requests.post(f"{BASE_URL}/deleteMessage", json={'chat_id': chat_id, 'message_id': msg_id}, timeout=2)
+            requests.post(f"{BASE_URL}/deleteMessage", json={'chat_id': chat_id, 'message_id': msg_id}, timeout=0.5)
             send_message(chat_id, "✅ عضویت تایید شد!")
         else:
             send_message(chat_id, "❌ هنوز عضو نشده‌اید!")
@@ -236,7 +241,7 @@ def handle_admin_action(update):
             'code': code,
             'time': datetime.now()
         })
-        send_message(chat_id, f"✅ فایل آپلود شد!\n\n```/start {code}```")
+        send_message(chat_id, f"✅ فایل آپلود شد!\n\n```\n/start {code}\n```")
         users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
     
     elif action == 'upload_text' and 'text' in msg:
@@ -246,7 +251,7 @@ def handle_admin_action(update):
             'code': code,
             'time': datetime.now()
         })
-        send_message(chat_id, f"✅ متن آپلود شد!\n\n`/start {code}`")
+        send_message(chat_id, f"✅ متن آپلود شد!\n\n```\n/start {code}\n```")
         users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
     
     elif action == 'broadcast_msg' and 'text' in msg:
@@ -289,7 +294,7 @@ def process_update(update):
     if not check_member(user['id']):
         keyboard = {
             'inline_keyboard': [
-                [{'text': '👉 عضویت در کانال', 'url': f'ble.ir/join/EB9ouCfTUz'}],
+                [{'text': '👉 عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
                 [{'text': '🔍 بررسی عضویت', 'callback_data': 'check_channel'}]
             ]
         }
@@ -310,23 +315,20 @@ def get_updates():
     try:
         response = requests.get(
             f"{BASE_URL}/getUpdates",
-            params={'offset': LAST_UPDATE_ID + 1, 'timeout': 10},
-            timeout=15
+            params={'offset': LAST_UPDATE_ID + 1, 'timeout': 5},
+            timeout=6
         ).json()
         return response.get('result', []) if response.get('ok') else []
     except:
         return []
 
 def main():
-    print("🤖 ربات فعال شد! تمام قابلیت‌ها در حال کار هستند...")
+    print("⚡ ربات فوق‌سریع فعال شد!")
     while True:
-        try:
-            updates = get_updates()
-            for update in updates:
-                process_update(update)
-        except Exception as e:
-            print(f"⚠️ خطای موقت: {e}")
-            time.sleep(1)
+        updates = get_updates()
+        for update in updates:
+            process_update(update)
+        time.sleep(0.1)  # Reduced sleep time
 
 if __name__ == '__main__':
     main()
