@@ -29,7 +29,7 @@ def get_iran_time():
 
 # Function to send a message
 def send_message(chat_id, text, reply_markup=None):
-    url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
+    url = f'https://tapi.bale.ai/bot{API_TOKEN}/sendMessage'
     params = {
         'chat_id': chat_id,
         'text': text,
