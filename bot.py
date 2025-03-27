@@ -7,74 +7,157 @@ import string
 import time
 
 # MongoDB setup
-client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347')
+client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347', connectTimeoutMS=30000, socketTimeoutMS=30000, serverSelectionTimeoutMS=30000)
 db = client['telegram_bot_db']
 files_collection = db['files']
 texts_collection = db['texts']
 users_collection = db['users']
-admin_messages_collection = db['admin_messages']
+stats_collection = db['stats']
 
 # Bot configuration
 BOT_TOKEN = '1160037511:LpWEJYm4o6Jw33kEFiYXahNwdWPoHASdsIgRLVeB'
 CHANNEL_ID = 5272323810
-WHITELIST = ['zonercm', 'id_hormoz']  # Whitelisted usernames
+WHITELIST = ['zonercm', 'id_hormoz']
 BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
 LAST_UPDATE_ID = 0
 
-# Persian month names for Gregorian conversion
-PERSIAN_MONTHS = [
-    'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
-    'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
-]
+# Persian numerals mapping
+PERSIAN_NUMS = {
+    '0': '۰', '1': '۱', '2': '۲', '3': '۳', '4': '۴',
+    '5': '۵', '6': '۶', '7': '۷', '8': '۸', '9': '۹'
+}
+
+def to_persian_num(text):
+    return ''.join(PERSIAN_NUMS.get(c, c) for c in str(text))
 
 def get_persian_time():
     tz = pytz.timezone('Asia/Tehran')
     now = datetime.now(tz)
-    
-    # Convert to Persian year (approximation)
-    persian_year = now.year - 621
-    
-    # Format the date string
-    return f"{persian_year}/{PERSIAN_MONTHS[now.month-1]}/{now.day} {now.hour}:{now.minute:02d}"
+    year = to_persian_num(now.year - 621)
+    month = to_persian_num(now.month)
+    day = to_persian_num(now.day)
+    hour = to_persian_num(now.hour)
+    minute = to_persian_num(now.minute)
+    second = to_persian_num(now.second)
+    return f"{year}/{month}/{day} - {hour}:{minute}:{second}"
 
-def send_message(chat_id, text, reply_markup=None):
-    payload = {
-        'chat_id': chat_id,
-        'text': text,
-        'parse_mode': 'HTML'
-    }
-    if reply_markup:
-        payload['reply_markup'] = reply_markup
-    requests.post(f"{BASE_URL}/sendMessage", json=payload)
+def send_message(chat_id, text, reply_markup=None, parse_mode='MarkdownV2'):
+    requests.post(
+        f"{BASE_URL}/sendMessage",
+        json={
+            'chat_id': chat_id,
+            'text': text,
+            'parse_mode': parse_mode,
+            'reply_markup': reply_markup
+        },
+        timeout=5
+    )
+
+def edit_message_reply_markup(chat_id, message_id, reply_markup):
+    requests.post(
+        f"{BASE_URL}/editMessageReplyMarkup",
+        json={
+            'chat_id': chat_id,
+            'message_id': message_id,
+            'reply_markup': reply_markup
+        },
+        timeout=5
+    )
 
 def delete_message(chat_id, message_id):
-    requests.post(f"{BASE_URL}/deleteMessage", json={
-        'chat_id': chat_id,
-        'message_id': message_id
-    })
+    requests.post(
+        f"{BASE_URL}/deleteMessage",
+        json={'chat_id': chat_id, 'message_id': message_id},
+        timeout=5
+    )
 
 def check_channel_membership(user_id):
-    response = requests.post(f"{BASE_URL}/getChatMember", json={
-        'chat_id': CHANNEL_ID,
-        'user_id': user_id
-    }).json()
-    return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
+    try:
+        response = requests.post(
+            f"{BASE_URL}/getChatMember",
+            json={'chat_id': CHANNEL_ID, 'user_id': user_id},
+            timeout=5
+        ).json()
+        return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
+    except:
+        return False
 
 def generate_random_code():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+
+def get_file_stats(code, user_id=None):
+    stats = stats_collection.find_one({'code': code}) or {
+        'code': code,
+        'downloads': 0,
+        'likes': 0,
+        'liked_by': []
+    }
+    
+    # Check if user already liked
+    user_liked = str(user_id) in stats.get('liked_by', []) if user_id else False
+    
+    return stats, user_liked
+
+def update_download_count(code):
+    stats_collection.update_one(
+        {'code': code},
+        {'$inc': {'downloads': 1}},
+        upsert=True
+    )
+
+def update_like_count(code, user_id):
+    user_id = str(user_id)
+    stats, liked = get_file_stats(code, user_id)
+    
+    if liked:
+        # Unlike
+        stats_collection.update_one(
+            {'code': code},
+            {
+                '$inc': {'likes': -1},
+                '$pull': {'liked_by': user_id}
+            }
+        )
+        return stats['likes'] - 1
+    else:
+        # Like
+        stats_collection.update_one(
+            {'code': code},
+            {
+                '$inc': {'likes': 1},
+                '$addToSet': {'liked_by': user_id}
+            },
+            upsert=True
+        )
+        return stats['likes'] + 1
+
+def create_stats_keyboard(code, likes, downloads, user_liked=False):
+    like_emoji = '❤️' if user_liked else '🤍'
+    return {
+        'inline_keyboard': [
+            [
+                {
+                    'text': f'{like_emoji} {to_persian_num(likes)}',
+                    'callback_data': f'like_{code}'
+                },
+                {
+                    'text': f'📥 {to_persian_num(downloads)}',
+                    'callback_data': 'download_count'
+                }
+            ]
+        ]
+    }
 
 def handle_start(update):
     message = update['message']
     user = message['from']
     chat_id = message['chat']['id']
     
-    # Check if it's a file link request
     if len(message.get('text', '').split()) > 1:
         code = message['text'].split()[1]
-        handle_file_request(chat_id, code)
+        handle_file_request(chat_id, code, user['id'])
         return
     
-    # Normal start command
     first_name = user.get('first_name', 'کاربر')
     persian_time = get_persian_time()
     
@@ -83,144 +166,69 @@ def handle_start(update):
         {'$set': {
             'username': user.get('username'),
             'first_name': first_name,
-            'chat_id': chat_id
+            'chat_id': chat_id,
+            'last_seen': datetime.now()
         }},
         upsert=True
     )
     
-    send_message(chat_id, f"👋 سلام {first_name}!\n\n🕒 زمان ایران: {persian_time}")
+    send_message(chat_id, f"✨ سلام {first_name}!\n\n⏰ زمان: {persian_time}")
 
-def handle_file_request(chat_id, code):
-    # Check files
+def handle_file_request(chat_id, code, user_id=None):
+    # Check files first
     file_data = files_collection.find_one({'code': code})
     if file_data:
-        send_document(chat_id, file_data['file_id'], file_data.get('caption'))
+        stats, user_liked = get_file_stats(code, user_id)
+        update_download_count(code)
+        
+        keyboard = create_stats_keyboard(code, stats['likes'], stats['downloads'] + 1, user_liked)
+        send_document(chat_id, file_data['file_id'], file_data.get('caption'), keyboard)
         return
     
-    # Check texts
+    # Check texts if file not found
     text_data = texts_collection.find_one({'code': code})
     if text_data:
         send_message(chat_id, text_data['text'])
-        return
-    
-    send_message(chat_id, "❌ لینک نامعتبر!")
+    else:
+        send_message(chat_id, "⚠️ لینک نامعتبر!")
 
-def send_document(chat_id, file_id, caption=None):
-    payload = {'chat_id': chat_id, 'document': file_id}
-    if caption: payload['caption'] = caption
-    requests.post(f"{BASE_URL}/sendDocument", json=payload)
-
-def handle_panel(update):
-    message = update['message']
-    user = message['from']
-    chat_id = message['chat']['id']
-    
-    if user.get('username') not in WHITELIST:
-        send_message(chat_id, "⛔ دسترسی محدود!")
-        return
-    
-    keyboard = {
-        'inline_keyboard': [
-            [{'text': '📤 آپلود فایل', 'callback_data': 'upload_file'}],
-            [{'text': '📝 آپلود متن', 'callback_data': 'upload_text'}],
-            [{'text': '📢 ارسال پیام همگانی', 'callback_data': 'broadcast_msg'}],
-            [{'text': '🖼️ ارسال عکس همگانی', 'callback_data': 'broadcast_photo'}]
-        ]
+def send_document(chat_id, file_id, caption=None, reply_markup=None):
+    payload = {
+        'chat_id': chat_id,
+        'document': file_id,
+        'caption': caption,
+        'parse_mode': 'MarkdownV2'
     }
+    if reply_markup:
+        payload['reply_markup'] = reply_markup
     
-    send_message(chat_id, "👑 پنل مدیریت", keyboard)
+    requests.post(
+        f"{BASE_URL}/sendDocument",
+        json=payload,
+        timeout=5
+    )
 
 def handle_callback(update):
     callback = update['callback_query']
     data = callback['data']
     message = callback['message']
     user = callback['from']
+    chat_id = message['chat']['id']
+    message_id = message['message_id']
     
     if data == 'check_channel':
         if check_channel_membership(user['id']):
-            delete_message(message['chat']['id'], message['message_id'])
-            send_message(message['chat']['id'], "✅ حالا می‌توانید از ربات استفاده کنید!")
+            delete_message(chat_id, message_id)
+            send_message(chat_id, "✅ عضویت تایید شد!")
         else:
-            send_message(message['chat']['id'], "❌ هنوز در کانال عضو نشده‌اید!")
-    else:
-        send_message(message['chat']['id'], {
-            'upload_file': "📤 فایل خود را ارسال کنید",
-            'upload_text': "📝 متن خود را ارسال کنید",
-            'broadcast_msg': "📢 پیام همگانی خود را بنویسید",
-            'broadcast_photo': "🖼️ عکس همگانی خود را ارسال کنید"
-        }[data])
-        users_collection.update_one(
-            {'user_id': user['id']},
-            {'$set': {'admin_action': data}},
-            upsert=True
-        )
-
-def handle_admin_file(update):
-    message = update['message']
-    user = message['from']
-    file_id = message['document']['file_id']
-    code = generate_random_code()
-    
-    files_collection.insert_one({
-        'file_id': file_id,
-        'caption': message.get('caption', ''),
-        'code': code,
-        'timestamp': datetime.now(),
-        'uploaded_by': user.get('username')
-    })
-    
-    send_message(message['chat']['id'], f"✅ فایل آپلود شد!\nلینک: /start {code}")
-    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
-
-def handle_admin_text(update):
-    message = update['message']
-    user = message['from']
-    code = generate_random_code()
-    
-    texts_collection.insert_one({
-        'text': message['text'],
-        'code': code,
-        'timestamp': datetime.now(),
-        'uploaded_by': user.get('username')
-    })
-    
-    send_message(message['chat']['id'], f"✅ متن آپلود شد!\nلینک: /start {code}")
-    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
-
-def handle_broadcast(update):
-    message = update['message']
-    user = message['from']
-    chat_id = message['chat']['id']
-    
-    users = list(users_collection.find({}))
-    success = 0
-    
-    if 'text' in message:
-        for u in users:
-            try:
-                send_message(u['chat_id'], message['text'])
-                success += 1
-            except:
-                continue
-        send_message(chat_id, f"📢 پیام به {success}/{len(users)} کاربر ارسال شد!")
-    
-    elif 'photo' in message:
-        photo_id = message['photo'][-1]['file_id']
-        caption = message.get('caption', '')
-        for u in users:
-            try:
-                send_photo(u['chat_id'], photo_id, caption)
-                success += 1
-            except:
-                continue
-        send_message(chat_id, f"🖼️ عکس به {success}/{len(users)} کاربر ارسال شد!")
-    
-    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
-
-def send_photo(chat_id, photo_id, caption=None):
-    payload = {'chat_id': chat_id, 'photo': photo_id}
-    if caption: payload['caption'] = caption
-    requests.post(f"{BASE_URL}/sendPhoto", json=payload)
+            send_message(chat_id, "❌ هنوز عضو نشده‌اید!")
+    elif data.startswith('like_'):
+        code = data.split('_')[1]
+        new_likes = update_like_count(code, user['id'])
+        stats, user_liked = get_file_stats(code, user['id'])
+        
+        keyboard = create_stats_keyboard(code, new_likes, stats['downloads'], user_liked)
+        edit_message_reply_markup(chat_id, message_id, keyboard)
 
 def process_update(update):
     global LAST_UPDATE_ID
@@ -231,57 +239,55 @@ def process_update(update):
         return
     
     message = update.get('message', {})
-    if not message: return
-    
-    user = message.get('from', {})
-    chat_id = message['chat']['id']
-    
-    # Channel check
-    if not check_channel_membership(user.get('id', 0)):
-        keyboard = {
-            'inline_keyboard': [
-                [{'text': 'عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
-                [{'text': 'بررسی عضویت', 'callback_data': 'check_channel'}]
-            ]
-        }
-        send_message(chat_id, "⚠️ لطفا ابتدا در کانال عضو شوید!", keyboard)
+    if not message:
         return
     
-    # Check admin actions
-    user_data = users_collection.find_one({'user_id': user['id']}) or {}
-    if user_data.get('admin_action'):
-        {
-            'upload_file': handle_admin_file,
-            'upload_text': handle_admin_text,
-            'broadcast_msg': handle_broadcast,
-            'broadcast_photo': handle_broadcast
-        }[user_data['admin_action']](update)
+    user = message.get('from', {})
+    if not user:
+        return
+    
+    chat_id = message['chat']['id']
+    
+    # Check channel membership
+    if not check_channel_membership(user['id']):
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '👉 عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
+                [{'text': '🔍 بررسی عضویت', 'callback_data': 'check_channel'}]
+            ]
+        }
+        send_message(chat_id, "⚠️ برای استفاده از ربات باید در کانال عضو شوید!", keyboard)
         return
     
     # Normal commands
     if 'text' in message:
-        if message['text'] == '/start' or message['text'].startswith('/start '):
+        text = message['text']
+        if text.startswith('/start'):
             handle_start(update)
-        elif message['text'] == 'پنل' and user.get('username') in WHITELIST:
+        elif text == 'پنل' and user.get('username') in WHITELIST:
             handle_panel(update)
 
 def get_updates():
-    response = requests.get(f"{BASE_URL}/getUpdates", params={
-        'offset': LAST_UPDATE_ID + 1,
-        'timeout': 30
-    }).json()
-    return response.get('result', []) if response.get('ok') else []
+    try:
+        response = requests.get(
+            f"{BASE_URL}/getUpdates",
+            params={'offset': LAST_UPDATE_ID + 1, 'timeout': 10},
+            timeout=15
+        ).json()
+        return response.get('result', []) if response.get('ok') else []
+    except:
+        return []
 
 def main():
-    print("Bot is running...")
+    print("🚀 Bot started with interactive counters...")
     while True:
         try:
             updates = get_updates()
             for update in updates:
                 process_update(update)
         except Exception as e:
-            print(f"Error: {e}")
-            time.sleep(5)
+            print(f"⚠️ Error: {e}")
+            time.sleep(1)
 
 if __name__ == '__main__':
     main()
