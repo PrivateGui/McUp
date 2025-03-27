@@ -6,8 +6,13 @@ import random
 import string
 import time
 
-# MongoDB setup
-client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347', connectTimeoutMS=30000, socketTimeoutMS=30000, serverSelectionTimeoutMS=30000)
+# MongoDB setup with optimized settings
+client = MongoClient(
+    'mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347',
+    connectTimeoutMS=2000,
+    socketTimeoutMS=2000,
+    serverSelectionTimeoutMS=2000
+)
 db = client['telegram_bot_db']
 files_collection = db['files']
 texts_collection = db['texts']
@@ -22,61 +27,66 @@ BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
 LAST_UPDATE_ID = 0
 
 # Persian numerals mapping
-PERSIAN_NUMS = {
-    '0': '۰', '1': '۱', '2': '۲', '3': '۳', '4': '۴',
-    '5': '۵', '6': '۶', '7': '۷', '8': '۸', '9': '۹'
-}
+PERSIAN_NUMS = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
 
 def to_persian_num(text):
-    return ''.join(PERSIAN_NUMS.get(c, c) for c in str(text))
+    return str(text).translate(PERSIAN_NUMS)
 
 def get_persian_time():
-    tz = pytz.timezone('Asia/Tehran')
-    now = datetime.now(tz)
-    year = to_persian_num(now.year - 621)
-    month = to_persian_num(now.month)
-    day = to_persian_num(now.day)
-    hour = to_persian_num(now.hour)
-    minute = to_persian_num(now.minute)
-    second = to_persian_num(now.second)
-    return f"{year}/{month}/{day} - {hour}:{minute}:{second}"
+    now = datetime.now(pytz.timezone('Asia/Tehran'))
+    return f"{to_persian_num(now.year-621)}/{to_persian_num(now.month)}/{to_persian_num(now.day)} - {to_persian_num(now.hour)}:{to_persian_num(now.minute)}:{to_persian_num(now.second)}"
 
-def send_message(chat_id, text, reply_markup=None, parse_mode='MarkdownV2'):
-    requests.post(
-        f"{BASE_URL}/sendMessage",
-        json={
-            'chat_id': chat_id,
-            'text': text,
-            'parse_mode': parse_mode,
-            'reply_markup': reply_markup
-        },
-        timeout=5
-    )
+def send_message(chat_id, text, reply_markup=None):
+    try:
+        requests.post(
+            f"{BASE_URL}/sendMessage",
+            json={
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': 'MarkdownV2',
+                'reply_markup': reply_markup
+            },
+            timeout=2
+        )
+    except:
+        pass
 
 def edit_message_reply_markup(chat_id, message_id, reply_markup):
-    requests.post(
-        f"{BASE_URL}/editMessageReplyMarkup",
-        json={
-            'chat_id': chat_id,
-            'message_id': message_id,
-            'reply_markup': reply_markup
-        },
-        timeout=5
-    )
+    try:
+        requests.post(
+            f"{BASE_URL}/editMessageReplyMarkup",
+            json={
+                'chat_id': chat_id,
+                'message_id': message_id,
+                'reply_markup': reply_markup
+            },
+            timeout=2
+        )
+    except:
+        pass
 
-def delete_message(chat_id, message_id):
-    requests.post(
-        f"{BASE_URL}/deleteMessage",
-        json={'chat_id': chat_id, 'message_id': message_id},
-        timeout=5
-    )
+def send_document(chat_id, file_id, caption=None, reply_markup=None):
+    try:
+        requests.post(
+            f"{BASE_URL}/sendDocument",
+            json={
+                'chat_id': chat_id,
+                'document': file_id,
+                'caption': caption,
+                'parse_mode': 'MarkdownV2',
+                'reply_markup': reply_markup
+            },
+            timeout=3
+        )
+    except:
+        pass
 
 def check_channel_membership(user_id):
     try:
         response = requests.post(
             f"{BASE_URL}/getChatMember",
             json={'chat_id': CHANNEL_ID, 'user_id': user_id},
-            timeout=5
+            timeout=2
         ).json()
         return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
     except:
@@ -92,10 +102,7 @@ def get_file_stats(code, user_id=None):
         'likes': 0,
         'liked_by': []
     }
-    
-    # Check if user already liked
     user_liked = str(user_id) in stats.get('liked_by', []) if user_id else False
-    
     return stats, user_liked
 
 def update_download_count(code):
@@ -110,7 +117,7 @@ def update_like_count(code, user_id):
     stats, liked = get_file_stats(code, user_id)
     
     if liked:
-        # Unlike
+        new_likes = stats['likes'] - 1
         stats_collection.update_one(
             {'code': code},
             {
@@ -118,9 +125,8 @@ def update_like_count(code, user_id):
                 '$pull': {'liked_by': user_id}
             }
         )
-        return stats['likes'] - 1
     else:
-        # Like
+        new_likes = stats['likes'] + 1
         stats_collection.update_one(
             {'code': code},
             {
@@ -129,21 +135,15 @@ def update_like_count(code, user_id):
             },
             upsert=True
         )
-        return stats['likes'] + 1
+    return new_likes
 
 def create_stats_keyboard(code, likes, downloads, user_liked=False):
     like_emoji = '❤️' if user_liked else '🤍'
     return {
         'inline_keyboard': [
             [
-                {
-                    'text': f'{like_emoji} {to_persian_num(likes)}',
-                    'callback_data': f'like_{code}'
-                },
-                {
-                    'text': f'📥 {to_persian_num(downloads)}',
-                    'callback_data': 'download_count'
-                }
+                {'text': f'{like_emoji} {to_persian_num(likes)}', 'callback_data': f'like_{code}'},
+                {'text': f'📥 {to_persian_num(downloads)}', 'callback_data': 'download_count'}
             ]
         ]
     }
@@ -175,38 +175,39 @@ def handle_start(update):
     send_message(chat_id, f"✨ سلام {first_name}!\n\n⏰ زمان: {persian_time}")
 
 def handle_file_request(chat_id, code, user_id=None):
-    # Check files first
     file_data = files_collection.find_one({'code': code})
     if file_data:
         stats, user_liked = get_file_stats(code, user_id)
         update_download_count(code)
-        
         keyboard = create_stats_keyboard(code, stats['likes'], stats['downloads'] + 1, user_liked)
         send_document(chat_id, file_data['file_id'], file_data.get('caption'), keyboard)
         return
     
-    # Check texts if file not found
     text_data = texts_collection.find_one({'code': code})
     if text_data:
         send_message(chat_id, text_data['text'])
     else:
         send_message(chat_id, "⚠️ لینک نامعتبر!")
 
-def send_document(chat_id, file_id, caption=None, reply_markup=None):
-    payload = {
-        'chat_id': chat_id,
-        'document': file_id,
-        'caption': caption,
-        'parse_mode': 'MarkdownV2'
-    }
-    if reply_markup:
-        payload['reply_markup'] = reply_markup
+def handle_panel(update):
+    message = update['message']
+    user = message['from']
+    chat_id = message['chat']['id']
     
-    requests.post(
-        f"{BASE_URL}/sendDocument",
-        json=payload,
-        timeout=5
-    )
+    if user.get('username') not in WHITELIST:
+        send_message(chat_id, "🔒 دسترسی محدود!")
+        return
+    
+    keyboard = {
+        'inline_keyboard': [
+            [{'text': '📁 آپلود فایل', 'callback_data': 'upload_file'}],
+            [{'text': '📝 آپلود متن', 'callback_data': 'upload_text'}],
+            [{'text': '📢 ارسال همگانی', 'callback_data': 'broadcast_msg'}],
+            [{'text': '🖼️ ارسال عکس', 'callback_data': 'broadcast_photo'}]
+        ]
+    }
+    
+    send_message(chat_id, "🔧 *پنل مدیریت*", keyboard)
 
 def handle_callback(update):
     callback = update['callback_query']
@@ -226,7 +227,6 @@ def handle_callback(update):
         code = data.split('_')[1]
         new_likes = update_like_count(code, user['id'])
         stats, user_liked = get_file_stats(code, user['id'])
-        
         keyboard = create_stats_keyboard(code, new_likes, stats['downloads'], user_liked)
         edit_message_reply_markup(chat_id, message_id, keyboard)
 
@@ -239,13 +239,10 @@ def process_update(update):
         return
     
     message = update.get('message', {})
-    if not message:
+    if not message or 'from' not in message:
         return
     
-    user = message.get('from', {})
-    if not user:
-        return
-    
+    user = message['from']
     chat_id = message['chat']['id']
     
     # Check channel membership
@@ -259,7 +256,7 @@ def process_update(update):
         send_message(chat_id, "⚠️ برای استفاده از ربات باید در کانال عضو شوید!", keyboard)
         return
     
-    # Normal commands
+    # Check admin commands
     if 'text' in message:
         text = message['text']
         if text.startswith('/start'):
@@ -279,14 +276,14 @@ def get_updates():
         return []
 
 def main():
-    print("🚀 Bot started with interactive counters...")
+    print("🚀 Bot started with all features working!")
     while True:
         try:
             updates = get_updates()
             for update in updates:
                 process_update(update)
         except Exception as e:
-            print(f"⚠️ Error: {e}")
+            print(f"⚠️ Temporary error: {e}")
             time.sleep(1)
 
 if __name__ == '__main__':
