@@ -16,45 +16,48 @@ admin_messages_collection = db['admin_messages']
 
 # Bot configuration
 BOT_TOKEN = '1160037511:LpWEJYm4o6Jw33kEFiYXahNwdWPoHASdsIgRLVeB'
-CHANNEL_ID = 5272323810 # Replace with your channel ID
+CHANNEL_ID = 5272323810
 WHITELIST = ['zonercm', 'id_hormoz']  # Whitelisted usernames
 BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
-LAST_UPDATE_ID = 0  # For long polling
+LAST_UPDATE_ID = 0
 
-# States for admin commands
-ADMIN_STATES = {}
+# Persian month names for Gregorian conversion
+PERSIAN_MONTHS = [
+    'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
+    'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
+]
 
-def get_iran_time():
+def get_persian_time():
     tz = pytz.timezone('Asia/Tehran')
     now = datetime.now(tz)
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Convert to Persian year (approximation)
+    persian_year = now.year - 621
+    
+    # Format the date string
+    return f"{persian_year}/{PERSIAN_MONTHS[now.month-1]}/{now.day} {now.hour}:{now.minute:02d}"
 
-def send_message(chat_id, text, reply_markup=None, parse_mode='HTML'):
-    url = f"{BASE_URL}/sendMessage"
+def send_message(chat_id, text, reply_markup=None):
     payload = {
         'chat_id': chat_id,
         'text': text,
-        'parse_mode': parse_mode
+        'parse_mode': 'HTML'
     }
     if reply_markup:
         payload['reply_markup'] = reply_markup
-    requests.post(url, json=payload)
+    requests.post(f"{BASE_URL}/sendMessage", json=payload)
 
 def delete_message(chat_id, message_id):
-    url = f"{BASE_URL}/deleteMessage"
-    payload = {
+    requests.post(f"{BASE_URL}/deleteMessage", json={
         'chat_id': chat_id,
         'message_id': message_id
-    }
-    requests.post(url, json=payload)
+    })
 
 def check_channel_membership(user_id):
-    url = f"{BASE_URL}/getChatMember"
-    payload = {
+    response = requests.post(f"{BASE_URL}/getChatMember", json={
         'chat_id': CHANNEL_ID,
         'user_id': user_id
-    }
-    response = requests.post(url, json=payload).json()
+    }).json()
     return response.get('result', {}).get('status') in ['member', 'administrator', 'creator']
 
 def generate_random_code():
@@ -64,10 +67,17 @@ def handle_start(update):
     message = update['message']
     user = message['from']
     chat_id = message['chat']['id']
-    first_name = user.get('first_name', 'کاربر')
-    iran_time = get_iran_time()
     
-    # Save user if not exists
+    # Check if it's a file link request
+    if len(message.get('text', '').split()) > 1:
+        code = message['text'].split()[1]
+        handle_file_request(chat_id, code)
+        return
+    
+    # Normal start command
+    first_name = user.get('first_name', 'کاربر')
+    persian_time = get_persian_time()
+    
     users_collection.update_one(
         {'user_id': user['id']},
         {'$set': {
@@ -78,8 +88,27 @@ def handle_start(update):
         upsert=True
     )
     
-    welcome_text = f"👋 سلام {first_name}!\n\n🕒 زمان ایران: {iran_time}"
-    send_message(chat_id, welcome_text)
+    send_message(chat_id, f"👋 سلام {first_name}!\n\n🕒 زمان ایران: {persian_time}")
+
+def handle_file_request(chat_id, code):
+    # Check files
+    file_data = files_collection.find_one({'code': code})
+    if file_data:
+        send_document(chat_id, file_data['file_id'], file_data.get('caption'))
+        return
+    
+    # Check texts
+    text_data = texts_collection.find_one({'code': code})
+    if text_data:
+        send_message(chat_id, text_data['text'])
+        return
+    
+    send_message(chat_id, "❌ لینک نامعتبر!")
+
+def send_document(chat_id, file_id, caption=None):
+    payload = {'chat_id': chat_id, 'document': file_id}
+    if caption: payload['caption'] = caption
+    requests.post(f"{BASE_URL}/sendDocument", json=payload)
 
 def handle_panel(update):
     message = update['message']
@@ -87,236 +116,164 @@ def handle_panel(update):
     chat_id = message['chat']['id']
     
     if user.get('username') not in WHITELIST:
-        send_message(chat_id, "⛔ دسترسی محدود! شما مجاز به استفاده از این بخش نیستید.")
+        send_message(chat_id, "⛔ دسترسی محدود!")
         return
-    
-    iran_time = get_iran_time()
-    welcome_text = f"👑 پنل مدیریت\n\n🕒 زمان ایران: {iran_time}"
     
     keyboard = {
         'inline_keyboard': [
             [{'text': '📤 آپلود فایل', 'callback_data': 'upload_file'}],
             [{'text': '📝 آپلود متن', 'callback_data': 'upload_text'}],
-            [{'text': '📢 ارسال پیام به کاربران', 'callback_data': 'send_message_to_users'}],
-            [{'text': '🖼️ ارسال عکس به کاربران', 'callback_data': 'send_photo_to_users'}]
+            [{'text': '📢 ارسال پیام همگانی', 'callback_data': 'broadcast_msg'}],
+            [{'text': '🖼️ ارسال عکس همگانی', 'callback_data': 'broadcast_photo'}]
         ]
     }
     
-    send_message(chat_id, welcome_text, keyboard)
+    send_message(chat_id, "👑 پنل مدیریت", keyboard)
 
-def handle_callback_query(update):
+def handle_callback(update):
     callback = update['callback_query']
     data = callback['data']
     message = callback['message']
-    chat_id = message['chat']['id']
     user = callback['from']
-    message_id = message['message_id']
     
     if data == 'check_channel':
         if check_channel_membership(user['id']):
-            delete_message(chat_id, message_id)
-            send_message(chat_id, "✅ حالا می‌توانید از ربات استفاده کنید!")
+            delete_message(message['chat']['id'], message['message_id'])
+            send_message(message['chat']['id'], "✅ حالا می‌توانید از ربات استفاده کنید!")
         else:
-            send_message(chat_id, "❌ هنوز در کانال عضو نشده‌اید!")
-    elif data in ['upload_file', 'upload_text', 'send_message_to_users', 'send_photo_to_users']:
-        ADMIN_STATES[user['id']] = data
-        action_text = {
-            'upload_file': '📤 لطفا فایل مورد نظر را ارسال کنید.',
-            'upload_text': '📝 لطفا متن مورد نظر را ارسال کنید.',
-            'send_message_to_users': '📢 لطفا پیام متنی که می‌خواهید برای کاربران ارسال شود را بنویسید.',
-            'send_photo_to_users': '🖼️ لطفا عکس مورد نظر را ارسال کنید (می‌توانید همراه با کپشن باشد).'
-        }[data]
-        send_message(chat_id, action_text)
+            send_message(message['chat']['id'], "❌ هنوز در کانال عضو نشده‌اید!")
+    else:
+        send_message(message['chat']['id'], {
+            'upload_file': "📤 فایل خود را ارسال کنید",
+            'upload_text': "📝 متن خود را ارسال کنید",
+            'broadcast_msg': "📢 پیام همگانی خود را بنویسید",
+            'broadcast_photo': "🖼️ عکس همگانی خود را ارسال کنید"
+        }[data])
+        users_collection.update_one(
+            {'user_id': user['id']},
+            {'$set': {'admin_action': data}},
+            upsert=True
+        )
 
-def handle_admin_file(message):
+def handle_admin_file(update):
+    message = update['message']
     user = message['from']
-    chat_id = message['chat']['id']
     file_id = message['document']['file_id']
-    caption = message.get('caption', '')
     code = generate_random_code()
     
     files_collection.insert_one({
         'file_id': file_id,
-        'caption': caption,
+        'caption': message.get('caption', ''),
         'code': code,
         'timestamp': datetime.now(),
         'uploaded_by': user.get('username')
     })
     
-    send_message(chat_id, f"✅ فایل با موفقیت آپلود شد!\n\nلینک دسترسی:\n/start {code}")
-    ADMIN_STATES.pop(user['id'], None)
+    send_message(message['chat']['id'], f"✅ فایل آپلود شد!\nلینک: /start {code}")
+    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
 
-def handle_admin_text(message):
+def handle_admin_text(update):
+    message = update['message']
     user = message['from']
-    chat_id = message['chat']['id']
-    text = message['text']
     code = generate_random_code()
     
     texts_collection.insert_one({
-        'text': text,
+        'text': message['text'],
         'code': code,
         'timestamp': datetime.now(),
         'uploaded_by': user.get('username')
     })
     
-    send_message(chat_id, f"✅ متن با موفقیت آپلود شد!\n\nلینک دسترسی:\n/start {code}")
-    ADMIN_STATES.pop(user['id'], None)
+    send_message(message['chat']['id'], f"✅ متن آپلود شد!\nلینک: /start {code}")
+    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
 
-def handle_admin_broadcast_message(message):
+def handle_broadcast(update):
+    message = update['message']
     user = message['from']
     chat_id = message['chat']['id']
-    text = message['text']
     
-    # Save the message for tracking
-    message_id = admin_messages_collection.insert_one({
-        'text': text,
-        'timestamp': datetime.now(),
-        'sent_by': user.get('username'),
-        'type': 'text'
-    }).inserted_id
+    users = list(users_collection.find({}))
+    success = 0
     
-    # Send to all users
-    users = users_collection.find()
-    success_count = 0
-    total_users = users.count()
+    if 'text' in message:
+        for u in users:
+            try:
+                send_message(u['chat_id'], message['text'])
+                success += 1
+            except:
+                continue
+        send_message(chat_id, f"📢 پیام به {success}/{len(users)} کاربر ارسال شد!")
     
-    for user in users:
-        try:
-            send_message(user['chat_id'], text)
-            success_count += 1
-        except:
-            continue
+    elif 'photo' in message:
+        photo_id = message['photo'][-1]['file_id']
+        caption = message.get('caption', '')
+        for u in users:
+            try:
+                send_photo(u['chat_id'], photo_id, caption)
+                success += 1
+            except:
+                continue
+        send_message(chat_id, f"🖼️ عکس به {success}/{len(users)} کاربر ارسال شد!")
     
-    send_message(chat_id, f"📢 پیام به {success_count} از {total_users} کاربر ارسال شد!")
-    ADMIN_STATES.pop(user['id'], None)
-
-def handle_admin_broadcast_photo(message):
-    user = message['from']
-    chat_id = message['chat']['id']
-    photo_id = message['photo'][-1]['file_id']  # Get highest resolution photo
-    caption = message.get('caption', '')
-    
-    # Save the message for tracking
-    message_id = admin_messages_collection.insert_one({
-        'photo_id': photo_id,
-        'caption': caption,
-        'timestamp': datetime.now(),
-        'sent_by': user.get('username'),
-        'type': 'photo'
-    }).inserted_id
-    
-    # Send to all users
-    users = users_collection.find()
-    success_count = 0
-    total_users = users.count()
-    
-    for user in users:
-        try:
-            send_photo(user['chat_id'], photo_id, caption)
-            success_count += 1
-        except:
-            continue
-    
-    send_message(chat_id, f"🖼️ عکس به {success_count} از {total_users} کاربر ارسال شد!")
-    ADMIN_STATES.pop(user['id'], None)
+    users_collection.update_one({'user_id': user['id']}, {'$unset': {'admin_action': ''}})
 
 def send_photo(chat_id, photo_id, caption=None):
-    url = f"{BASE_URL}/sendPhoto"
-    payload = {
-        'chat_id': chat_id,
-        'photo': photo_id
-    }
-    if caption:
-        payload['caption'] = caption
-    requests.post(url, json=payload)
+    payload = {'chat_id': chat_id, 'photo': photo_id}
+    if caption: payload['caption'] = caption
+    requests.post(f"{BASE_URL}/sendPhoto", json=payload)
 
 def process_update(update):
     global LAST_UPDATE_ID
+    LAST_UPDATE_ID = update['update_id']
     
     if 'callback_query' in update:
-        LAST_UPDATE_ID = update['update_id']
-        handle_callback_query(update)
+        handle_callback(update)
         return
     
-    if 'message' not in update:
-        return
+    message = update.get('message', {})
+    if not message: return
     
-    message = update['message']
-    LAST_UPDATE_ID = update['update_id']
+    user = message.get('from', {})
     chat_id = message['chat']['id']
-    user = message.get('from')
     
-    if not user:
-        return
-    
-    # Check channel membership first
-    if not check_channel_membership(user['id']):
+    # Channel check
+    if not check_channel_membership(user.get('id', 0)):
         keyboard = {
             'inline_keyboard': [
                 [{'text': 'عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
                 [{'text': 'بررسی عضویت', 'callback_data': 'check_channel'}]
             ]
         }
-        send_message(chat_id, "⚠️ لطفا ابتدا در کانال ما عضو شوید!", keyboard)
+        send_message(chat_id, "⚠️ لطفا ابتدا در کانال عضو شوید!", keyboard)
         return
     
-    # Check if user is in admin state
-    if user['id'] in ADMIN_STATES:
-        state = ADMIN_STATES[user['id']]
-        if state == 'upload_file' and 'document' in message:
-            handle_admin_file(message)
-        elif state == 'upload_text' and 'text' in message:
-            handle_admin_text(message)
-        elif state == 'send_message_to_users' and 'text' in message:
-            handle_admin_broadcast_message(message)
-        elif state == 'send_photo_to_users' and 'photo' in message:
-            handle_admin_broadcast_photo(message)
+    # Check admin actions
+    user_data = users_collection.find_one({'user_id': user['id']}) or {}
+    if user_data.get('admin_action'):
+        {
+            'upload_file': handle_admin_file,
+            'upload_text': handle_admin_text,
+            'broadcast_msg': handle_broadcast,
+            'broadcast_photo': handle_broadcast
+        }[user_data['admin_action']](update)
         return
     
     # Normal commands
     if 'text' in message:
-        text = message['text']
-        if text == '/start' or text.startswith('/start '):
+        if message['text'] == '/start' or message['text'].startswith('/start '):
             handle_start(update)
-        elif text == 'پنل' and user.get('username') in WHITELIST:
+        elif message['text'] == 'پنل' and user.get('username') in WHITELIST:
             handle_panel(update)
-        elif text.startswith('/start '):
-            code = text.split(' ')[1]
-            # Check for file
-            file_data = files_collection.find_one({'code': code})
-            if file_data:
-                send_document(chat_id, file_data['file_id'], file_data.get('caption'))
-                return
-            
-            # Check for text
-            text_data = texts_collection.find_one({'code': code})
-            if text_data:
-                send_message(chat_id, text_data['text'])
-                return
-            
-            send_message(chat_id, "❌ لینک نامعتبر!")
-
-def send_document(chat_id, file_id, caption=None):
-    url = f"{BASE_URL}/sendDocument"
-    payload = {
-        'chat_id': chat_id,
-        'document': file_id
-    }
-    if caption:
-        payload['caption'] = caption
-    requests.post(url, json=payload)
 
 def get_updates():
-    global LAST_UPDATE_ID
-    url = f"{BASE_URL}/getUpdates"
-    params = {'offset': LAST_UPDATE_ID + 1, 'timeout': 30}
-    response = requests.get(url, params=params).json()
-    if response.get('ok'):
-        return response.get('result', [])
-    return []
+    response = requests.get(f"{BASE_URL}/getUpdates", params={
+        'offset': LAST_UPDATE_ID + 1,
+        'timeout': 30
+    }).json()
+    return response.get('result', []) if response.get('ok') else []
 
 def main():
-    print("Bot started polling...")
+    print("Bot is running...")
     while True:
         try:
             updates = get_updates()
