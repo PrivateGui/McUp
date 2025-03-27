@@ -236,7 +236,7 @@ def handle_admin_action(update):
             'code': code,
             'time': datetime.now()
         })
-        send_message(chat_id, f"✅ فایل آپلود شد!\n\n`/start {code}`")
+        send_message(chat_id, f"✅ فایل آپلود شد!\n\n```/start {code}```")
         users_col.update_one({'user_id': user['id']}, {'$unset': {'action': ''}})
     
     elif action == 'upload_text' and 'text' in msg:
@@ -289,7 +289,7 @@ def process_update(update):
     if not check_member(user['id']):
         keyboard = {
             'inline_keyboard': [
-                [{'text': '👉 عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
+                [{'text': '👉 عضویت در کانال', 'url': f'ble.ir/join/EB9ouCfTUz'}],
                 [{'text': '🔍 بررسی عضویت', 'callback_data': 'check_channel'}]
             ]
         }
