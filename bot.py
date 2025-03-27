@@ -7,7 +7,12 @@ import string
 import time
 
 # MongoDB setup with optimized settings
-client = MongoClient('mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347', connectTimeoutMS=500, socketTimeoutMS=500)
+client = MongoClient(
+    'mongodb://mongo:WhLUfhKsSaOtcqOkzjnPoNqLMpboQTan@yamabiko.proxy.rlwy.net:34347',
+    connectTimeoutMS=2000,
+    socketTimeoutMS=2000,
+    serverSelectionTimeoutMS=2000
+)
 db = client['telegram_bot_db']
 files_col = db['files']
 texts_col = db['texts']
@@ -21,7 +26,7 @@ WHITELIST = ['zonercm', 'id_hormoz']
 BASE_URL = f'https://tapi.bale.ai/bot{BOT_TOKEN}'
 LAST_UPDATE_ID = 0
 
-# Persian numbers converter
+# Persian numerals mapping
 PERSIAN_NUMS = str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹')
 
 def to_persian(text):
@@ -41,20 +46,16 @@ def send_message(chat_id, text, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=1
+            timeout=2
         )
-    except:
-        pass
+    except Exception as e:
+        print(f"Failed to send message: {e}")
 
-def edit_message_reply_markup(chat_id, message_id, reply_markup):
+def delete_message(chat_id, message_id):
     try:
         requests.post(
-            f"{BASE_URL}/editMessageReplyMarkup",
-            json={
-                'chat_id': chat_id,
-                'message_id': message_id,
-                'reply_markup': reply_markup
-            },
+            f"{BASE_URL}/deleteMessage",
+            json={'chat_id': chat_id, 'message_id': message_id},
             timeout=1
         )
     except:
@@ -71,7 +72,21 @@ def send_document(chat_id, file_id, caption=None, reply_markup=None):
                 'parse_mode': 'MarkdownV2',
                 'reply_markup': reply_markup
             },
-            timeout=2
+            timeout=3
+        )
+    except Exception as e:
+        print(f"Failed to send document: {e}")
+
+def edit_message_reply_markup(chat_id, message_id, reply_markup):
+    try:
+        requests.post(
+            f"{BASE_URL}/editMessageReplyMarkup",
+            json={
+                'chat_id': chat_id,
+                'message_id': message_id,
+                'reply_markup': reply_markup
+            },
+            timeout=1
         )
     except:
         pass
@@ -81,13 +96,13 @@ def check_member(user_id):
         response = requests.post(
             f"{BASE_URL}/getChatMember",
             json={'chat_id': CHANNEL_ID, 'user_id': user_id},
-            timeout=1
+            timeout=2
         ).json()
         status = response.get('result', {}).get('status')
         return status in ['member', 'administrator', 'creator']
     except Exception as e:
         print(f"Channel check error: {e}")
-        return True  # Fail-safe to prevent blocking users
+        return True  # Fail-safe
 
 def generate_code():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
@@ -105,18 +120,19 @@ def update_likes(code, user_id):
     stats, liked = get_stats(code, user_id)
     
     if liked:
+        new_likes = stats['likes'] - 1
         stats_col.update_one(
             {'code': code},
             {'$inc': {'likes': -1}, '$pull': {'liked_by': user_id}}
         )
-        return stats['likes'] - 1
     else:
+        new_likes = stats['likes'] + 1
         stats_col.update_one(
             {'code': code},
             {'$inc': {'likes': 1}, '$addToSet': {'liked_by': user_id}},
             upsert=True
         )
-        return stats['likes'] + 1
+    return new_likes
 
 def create_keyboard(code, likes, downloads, liked=False):
     return {
@@ -131,13 +147,21 @@ def handle_start(update):
     user = msg['from']
     chat_id = msg['chat']['id']
     
-    # FIRST check if it's a file request
     if len(msg.get('text', '').split()) > 1:
         code = msg['text'].split()[1]
-        handle_file(chat_id, code, user['id'])
+        handle_file_request(chat_id, code, user['id'])
         return
     
-    # Only show welcome for plain /start
+    if not check_member(user['id']):
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': '👉 عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
+                [{'text': '🔍 بررسی عضویت', 'callback_data': 'check_channel'}]
+            ]
+        }
+        send_message(chat_id, "⚠️ برای استفاده از ربات باید در کانال عضو شوید!", keyboard)
+        return
+    
     users_col.update_one(
         {'user_id': user['id']},
         {'$set': {
@@ -151,8 +175,7 @@ def handle_start(update):
     
     send_message(chat_id, f"✨ سلام {user.get('first_name', 'کاربر')}!\n\n⏰ زمان: {get_iran_time()}")
 
-def handle_file(chat_id, code, user_id):
-    # Check files
+def handle_file_request(chat_id, code, user_id):
     file_data = files_col.find_one({'code': code})
     if file_data:
         stats, liked = get_stats(code, user_id)
@@ -161,7 +184,6 @@ def handle_file(chat_id, code, user_id):
         send_document(chat_id, file_data['file_id'], file_data.get('caption'), keyboard)
         return
     
-    # Check texts
     text_data = texts_col.find_one({'code': code})
     if text_data:
         send_message(chat_id, text_data['text'])
@@ -198,7 +220,7 @@ def handle_callback(update):
     
     if data == 'check_channel':
         if check_member(user['id']):
-            requests.post(f"{BASE_URL}/deleteMessage", json={'chat_id': chat_id, 'message_id': msg_id}, timeout=1)
+            delete_message(chat_id, msg_id)
             send_message(chat_id, "✅ عضویت تایید شد!")
         else:
             send_message(chat_id, "❌ هنوز عضو نشده‌اید!")
@@ -290,18 +312,6 @@ def process_update(update):
     user = msg['from']
     chat_id = msg['chat']['id']
     
-    # Skip channel check for file requests and panel commands
-    if not (len(msg.get('text', '').split()) > 1 or msg.get('text') == 'پنل'):
-        if not check_member(user['id']):
-            keyboard = {
-                'inline_keyboard': [
-                    [{'text': '👉 عضویت در کانال', 'url': f'https://t.me/c/{str(CHANNEL_ID)[4:]}'}],
-                    [{'text': '🔍 بررسی عضویت', 'callback_data': 'check_channel'}]
-                ]
-            }
-            send_message(chat_id, "⚠️ برای استفاده از ربات باید در کانال عضو شوید!", keyboard)
-            return
-    
     # Check admin actions first
     handle_admin_action(update)
     
@@ -316,20 +326,25 @@ def get_updates():
     try:
         response = requests.get(
             f"{BASE_URL}/getUpdates",
-            params={'offset': LAST_UPDATE_ID + 1, 'timeout': 5},
-            timeout=6
+            params={'offset': LAST_UPDATE_ID + 1, 'timeout': 10},
+            timeout=15
         ).json()
         return response.get('result', []) if response.get('ok') else []
-    except:
+    except Exception as e:
+        print(f"Update error: {e}")
         return []
 
 def main():
-    print("🚀 ربات فعال شد! تمام مشکلات رفع شده‌اند")
+    print("🤖 ربات فعال شد! تمام قابلیت‌ها در حال کار هستند...")
     while True:
-        updates = get_updates()
-        for update in updates:
-            process_update(update)
-        time.sleep(0.1)
+        try:
+            updates = get_updates()
+            for update in updates:
+                process_update(update)
+            time.sleep(0.1)
+        except Exception as e:
+            print(f"⚠️ خطا: {e}")
+            time.sleep(1)
 
 if __name__ == '__main__':
     main()
