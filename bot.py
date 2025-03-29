@@ -13,7 +13,7 @@ TOKEN = "1160037511:Dc8btl6zj31YgbocUgrQ5ImVb5DaPWZKXGHC7Pbv"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 CHANNEL_ID = 5272323810 # Replace with your channel ID
 WHITELIST = ["zonercm", "id_hormoz"]  # Whitelisted usernames
-POLLING_INTERVAL = 0.1  # 250ms
+POLLING_INTERVAL = 0.007  # 250ms
 ADMIN_COMMAND = "پنل"
 
 # MongoDB setup
