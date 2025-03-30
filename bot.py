@@ -12,7 +12,7 @@ from threading import Timer
 TOKEN = "1160037511:Dc8btl6zj31YgbocUgrQ5ImVb5DaPWZKXGHC7Pbv"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 CHANNEL_ID = 5272323810 # Replace with your channel ID
-WHITELIST = ["zonercm", "id_hormoz"]  # Whitelisted usernames
+WHITELIST = ["zonercm", "id_hormoz", "sadrakingir"]  # Whitelisted usernames
 POLLING_INTERVAL = 0.007  # 250ms
 ADMIN_COMMAND = "پنل"
 
